@@ -16,6 +16,8 @@
 // Xilinx Libraries
 #include "ff.h"         // Include the FatFs library header
 #include "xil_cache.h"  // Include cache management functions
+#include <stdint.h>
+#include <xil_io.h>
 #include <xil_printf.h> // Include Debug IO
 
 // Addtional Libraries
@@ -27,13 +29,19 @@ void print_buffer(const uint8_t *buffer, size_t size);
 void reset_apu_cores(uint32_t value);
 void set_apu_rvba(uint32_t entrypoint);
 void delay_ms(int milliseconds);
-void mock_fsbl_SetATFHandoffParams(uint32_t EntryCount, uint32_t PartitionHeader, uint32_t PartitionFlags);
+
+// Define the handoff structure
+typedef struct 
+{
+    char magic[4];            // Magic characters 'X', 'L', 'N', 'X'
+    uint32_t totalPartitions; // Total number of partitions
+    uint32_t execAddress;     // Execution address for the partition
+} HandoffParams;
 
 // Generic Definitions
 #define CHUNK_SIZE 4096
 
 // Required for pointing to mock handoff structure
-#define MAX_ENTRIES 10 // Define a maximum number of entries limit
 #define GLOBAL_GEN_STORAGE6 (*(volatile uint32_t *)(0xFFD80048U))
 
 // APU Module Reset Vector Base Address
@@ -52,6 +60,8 @@ void mock_fsbl_SetATFHandoffParams(uint32_t EntryCount, uint32_t PartitionHeader
 #define RST_FPD_APU_VALU 0xFU
 #define RST_FPD_APU_CLER 0x0U
 
+// Global Declarations
+
 // Main
 int main() 
 {
@@ -61,30 +71,35 @@ int main()
     uint32_t bl31_entrypoint = load_elf64("bl31.elf");
 
     // Load SSBL into DDR4 Memory
-    load_elf64("u-boot.elf");
+    uint32_t uboot_entrypoint = load_elf64("u-boot.elf");
 
-    // Call the function to set handoff parameters
-    mock_fsbl_SetATFHandoffParams(0, bl31_entrypoint, 0);
+    // Configure GLOBAL_GEN_STORAGE6 Register for FSBL AT-F Handoff
+
+    // Create an instance of HandoffParams
+    HandoffParams handoff;
+    
+    // Fill the magic characters
+    handoff.magic[0] = 'X';
+    handoff.magic[1] = 'L';
+    handoff.magic[2] = 'N';
+    handoff.magic[3] = 'X';
+
+    // Set the total number of partitions to 1
+    handoff.totalPartitions = 1;
+    
+    // Set execution address
+    handoff.execAddress = (uint32_t)uboot_entrypoint;
+    
+    // Copy the structure contents to the global memory location
+    memcpy((void *)&GLOBAL_GEN_STORAGE6, (void *)&handoff, sizeof(HandoffParams));
 
     // Place the APU Cores in a soft reset state
     xil_printf("Placing APU Core(s) in reset state!\r\n");
     reset_apu_cores((uint32_t)RST_FPD_APU_VALU);
 
-    xil_printf("APU Core(s) Current PC Values:\r\n");
-    xil_printf("RVBARADDR0H: 0x%08X \r\n", RVBARADDR0H);
-    xil_printf("RVBARADDR1H: 0x%08X \r\n", RVBARADDR1H);
-    xil_printf("RVBARADDR2H: 0x%08X \r\n", RVBARADDR2H);
-    xil_printf("RVBARADDR3H: 0x%08X \r\n", RVBARADDR3H);
-
     // Modify the RVBARADDR for each APU core to point to AT-F
     xil_printf("Relocating APU Core(s) PC to: 0x%8X\r\n", bl31_entrypoint);
     set_apu_rvba( bl31_entrypoint);
-
-    xil_printf("APU Core(s) Updated PC Values:\r\n");
-    xil_printf("RVBARADDR0H: 0x%08X \r\n", RVBARADDR0H);
-    xil_printf("RVBARADDR1H: 0x%08X \r\n", RVBARADDR1H);
-    xil_printf("RVBARADDR2H: 0x%08X \r\n", RVBARADDR2H);
-    xil_printf("RVBARADDR3H: 0x%08X \r\n", RVBARADDR3H);
     
     // Clear the APU Core reset state
     xil_printf("Clearing APU Core(s) reset state!\r\n");
@@ -320,17 +335,17 @@ void reset_apu_cores(uint32_t value)
 
 void set_apu_rvba(uint32_t entrypoint)
 {
-    // Set the Reset Vector Base Address Low Bits to 0x0
-    RVBARADDR0L = (uint32_t)RVBARADDR_LOW_VALU;
-    RVBARADDR1L = (uint32_t)RVBARADDR_LOW_VALU;
-    RVBARADDR2L = (uint32_t)RVBARADDR_LOW_VALU;
-    RVBARADDR3L = (uint32_t)RVBARADDR_LOW_VALU;
+    // Set the Reset Vector Base Address Low Bits to Entry Point
+    RVBARADDR0L = (uint32_t)entrypoint;
+    RVBARADDR1L = (uint32_t)entrypoint;
+    RVBARADDR2L = (uint32_t)entrypoint;
+    RVBARADDR3L = (uint32_t)entrypoint;
 
-    // Set the Reset Vector Base Address High Bits to Entry Point
-    RVBARADDR0H = (uint32_t)entrypoint;
-    RVBARADDR1H = (uint32_t)entrypoint;
-    RVBARADDR2H = (uint32_t)entrypoint;
-    RVBARADDR3H = (uint32_t)entrypoint;
+    // Set the Reset Vector Base Address High Bits to 0x0
+    RVBARADDR0H = (uint32_t)RVBARADDR_LOW_VALU;
+    RVBARADDR1H = (uint32_t)RVBARADDR_LOW_VALU;
+    RVBARADDR2H = (uint32_t)RVBARADDR_LOW_VALU;
+    RVBARADDR3H = (uint32_t)RVBARADDR_LOW_VALU;
 }
 
 void delay_ms(int milliseconds) 
@@ -342,43 +357,4 @@ void delay_ms(int milliseconds)
             // Busy wait
         }
     }
-}
-
-typedef struct 
-{
-    uintptr_t EntryPoint; // Address to execute the partition
-    uint32_t PartitionFlags; // Flags for the partition properties
-} ATFHandoffEntry;
-
-typedef struct 
-{
-    char MagicValue[4]; // Magic value for identification
-    uint32_t NumEntries; // Number of entries
-    ATFHandoffEntry Entry[MAX_ENTRIES]; // Array of entry parameters
-} ATFHandoffParamsStruct;
-
-void mock_fsbl_SetATFHandoffParams(uint32_t EntryCount, uint32_t PartitionHeader, uint32_t PartitionFlags) 
-{
-    ATFHandoffParamsStruct ATFHandoffParams;
-    
-    /* Insert magic string */
-    if (EntryCount == 0U) 
-    {
-        ATFHandoffParams.MagicValue[0] = 'X';
-        ATFHandoffParams.MagicValue[1] = 'L';
-        ATFHandoffParams.MagicValue[2] = 'N';
-        ATFHandoffParams.MagicValue[3] = 'X';
-    }
-
-    ATFHandoffParams.NumEntries = EntryCount + 1U;
-
-    // Ensure we do not exceed the maximum entries
-    if (EntryCount < MAX_ENTRIES) 
-    {
-        ATFHandoffParams.Entry[EntryCount].EntryPoint = PartitionHeader; // Assuming Address is located at offset 1
-        ATFHandoffParams.Entry[EntryCount].PartitionFlags = PartitionFlags;
-    }
-
-    // Now set GLOBAL_GEN_STORAGE6 to point to the ATFHandoffParams structure
-    GLOBAL_GEN_STORAGE6 = (uint32_t)&ATFHandoffParams; // Cast the structure pointer to uint32_t  
 }
