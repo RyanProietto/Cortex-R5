@@ -29,20 +29,14 @@ void print_buffer(const uint8_t *buffer, size_t size);
 void reset_apu_cores(uint32_t value);
 void set_apu_rvba(uint32_t entrypoint);
 void delay_ms(int milliseconds);
-
-// Define the handoff structure
-typedef struct 
-{
-    char magic[4];            // Magic characters 'X', 'L', 'N', 'X'
-    uint32_t totalPartitions; // Total number of partitions
-    uint32_t execAddress;     // Execution address for the partition
-} HandoffParams;
+void mock_handoff(uint32_t entry_point);
 
 // Generic Definitions
 #define CHUNK_SIZE 4096
 
 // Required for pointing to mock handoff structure
 #define GLOBAL_GEN_STORAGE6 (*(volatile uint32_t *)(0xFFD80048U))
+#define FSBL_MAX_PARTITIONS 8
 
 // APU Module Reset Vector Base Address
 #define RVBARADDR0L (*(volatile uint32_t *)(0xFD5C0040U))
@@ -60,39 +54,28 @@ typedef struct
 #define RST_FPD_APU_VALU 0xFU
 #define RST_FPD_APU_CLER 0x0U
 
-// Global Declarations
+struct xfsbl_atf_handoff_params 
+{
+    char magic[4];
+    uint32_t num_entries;
+    struct {
+        uint32_t entry_point;
+        uint32_t flags;
+    } partition[1]; // Adjust partition count as necessary
+};
 
 // Main
 int main() 
 {
-    delay_ms(3000);
-
     // Load AT-F onto Cortex-A53 processor and retrieve entry point
     uint32_t bl31_entrypoint = load_elf64("bl31.elf");
-
+    
     // Load SSBL into DDR4 Memory
     uint32_t uboot_entrypoint = load_elf64("u-boot.elf");
 
     // Configure GLOBAL_GEN_STORAGE6 Register for FSBL AT-F Handoff
-
-    // Create an instance of HandoffParams
-    HandoffParams handoff;
+    mock_handoff(uboot_entrypoint);
     
-    // Fill the magic characters
-    handoff.magic[0] = 'X';
-    handoff.magic[1] = 'L';
-    handoff.magic[2] = 'N';
-    handoff.magic[3] = 'X';
-
-    // Set the total number of partitions to 1
-    handoff.totalPartitions = 1;
-    
-    // Set execution address
-    handoff.execAddress = (uint32_t)uboot_entrypoint;
-    
-    // Copy the structure contents to the global memory location
-    memcpy((void *)&GLOBAL_GEN_STORAGE6, (void *)&handoff, sizeof(HandoffParams));
-
     // Place the APU Cores in a soft reset state
     xil_printf("Placing APU Core(s) in reset state!\r\n");
     reset_apu_cores((uint32_t)RST_FPD_APU_VALU);
@@ -357,4 +340,40 @@ void delay_ms(int milliseconds)
             // Busy wait
         }
     }
+}
+
+void mock_handoff(uint32_t entry_point)
+{
+    struct xfsbl_atf_handoff_params *atfhandoffparams;
+  
+    // Allocate memory for handoff parameters
+    atfhandoffparams = (struct xfsbl_atf_handoff_params *)malloc(sizeof(struct xfsbl_atf_handoff_params));
+    if (atfhandoffparams == NULL) {
+        xil_printf("Memory allocation failed.\r\n");
+        return; // Handle error appropriately
+    }
+
+    // Initialize the magic number
+    atfhandoffparams->magic[0] = 'X';
+    atfhandoffparams->magic[1] = 'L';
+    atfhandoffparams->magic[2] = 'N';
+    atfhandoffparams->magic[3] = 'X';
+
+    // Set the number of entries
+    atfhandoffparams->num_entries = 1;
+
+    // Set the parameters for the first partition
+    atfhandoffparams->partition[0].entry_point = entry_point;
+    atfhandoffparams->partition[0].flags = 2 << 3; // Ensure flag setting is correct
+
+    // For debugging purposes, print the contents of the handoff structure
+    xil_printf("Handoff Parameters Set:\r\n");
+    xil_printf("Magic: %c%c%c%c\r\n", atfhandoffparams->magic[0], atfhandoffparams->magic[1], 
+        atfhandoffparams->magic[2], atfhandoffparams->magic[3]);
+    xil_printf("Partition Count: %d\r\n", atfhandoffparams->num_entries);
+    xil_printf("Execution Address: 0x%08x\r\n", atfhandoffparams->partition[0].entry_point);
+
+    // Store the handoff structure into the global register (ensure proper type)
+    GLOBAL_GEN_STORAGE6 = (uint32_t)atfhandoffparams;  // Adjust if using a different register type
+    xil_printf("PMU_GLOBAL_GEN_STORAGE6 REGISTER = 0x%08x\r\n", GLOBAL_GEN_STORAGE6);
 }
